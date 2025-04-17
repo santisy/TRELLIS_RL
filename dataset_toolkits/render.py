@@ -16,10 +16,48 @@ from utils import sphere_hammersley_sequence
 BLENDER_PATH = os.environ.get("BLENDER_PATH", None)
 if BLENDER_PATH is None:
     raise ValueError("Must first specify the Blender binary path as $BLENDER_PATH")
+    
+def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Processing objects') -> pd.DataFrame:
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from tqdm import tqdm
+    
+    # load metadata
+    metadata = metadata.to_dict('records')
+
+    # processing objects
+    records = []
+    max_workers = max_workers or os.cpu_count()
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor, \
+            tqdm(total=len(metadata), desc=desc) as pbar:
+            def worker(metadatum):
+                try:
+                    local_path = metadatum['local_path']
+                    sha256 = metadatum['sha256']
+                    file = os.path.join(output_dir, local_path)
+                    record = func(file, sha256)
+                    if record is not None:
+                        if isinstance(record, dict):
+                            records.append(record)
+                        elif isinstance(record, list):
+                            records.extend(record)
+                    pbar.update()
+                except Exception as e:
+                    print(f"Error processing object {sha256}: {e}")
+                    pbar.update()
+            
+            executor.map(worker, metadata)
+            executor.shutdown(wait=True)
+    except:
+        print("Error happened during processing.")
+        
+    return pd.DataFrame.from_records(records)
 
 
 def _render(file_path, sha256, output_dir, num_views, hdri_paths):
-    output_folder = os.path.join(output_dir, 'renders', sha256)
+    base_folder = os.path.join(output_dir, 'renders', sha256)
+    records = []
     
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
@@ -39,7 +77,6 @@ def _render(file_path, sha256, output_dir, num_views, hdri_paths):
         '--views', json.dumps(views),
         '--object', os.path.expanduser(file_path),
         '--resolution', '512',
-        '--output_folder', output_folder,
         '--engine', 'CYCLES',
         '--save_mesh',
     ]
@@ -48,17 +85,32 @@ def _render(file_path, sha256, output_dir, num_views, hdri_paths):
     
     if hdri_paths:
         for hdri_path in hdri_paths:
-            args_run = args + ['--hdri_path', hdri_path]
+            hdri_name = os.path.splitext(os.path.basename(hdri_path))[0]
+            output_folder = os.path.join(base_folder, hdri_name)
+            args_run = args + ['--hdri_path', hdri_path,
+                               '--output_folder', output_folder]
             call(args_run, stdout=DEVNULL, stderr=DEVNULL)
+            if os.path.exists(os.path.join(output_folder, 'transforms.json')):
+                records.append({
+                    'sha256': sha256,
+                    'hdri':   hdri_name,
+                    'rendered': True
+                })
     else:
+        args += ['--output_folder', base_folder]
         call(args, stdout=DEVNULL, stderr=DEVNULL)
     
-    if os.path.exists(os.path.join(output_folder, 'transforms.json')):
-        return {'sha256': sha256, 'rendered': True}
+        if os.path.exists(os.path.join(base_folder, 'transforms.json')):
+            records.append({
+                'sha256': sha256,
+                'hdri':   None,
+                'rendered': True
+            })        
+
+    return records
 
 
 if __name__ == '__main__':
-    dataset_utils = importlib.import_module(f'datasets.{sys.argv[1]}')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_dir', type=str, required=True,
@@ -76,7 +128,6 @@ if __name__ == '__main__':
                         help='Directory containing HDRI .exr files')
     parser.add_argument('--hdri_strength', type=float, default=1.0,
                         help='Strength multiplier for HDRI environment lighting')
-    dataset_utils.add_args(parser)
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--max_workers', type=int, default=8)
@@ -87,10 +138,10 @@ if __name__ == '__main__':
     
     # Find all hdri files
     hdri_paths = []
-    if opt.hdri_list:
-        hdri_paths = [p.strip() for p in opt.hdri_list.split(',') if p.strip()]
-    elif opt.hdri_dir:
+    if opt.hdri_dir:
         hdri_paths = sorted(glob.glob(os.path.join(opt.hdri_dir, '*.exr')))    
+    elif opt.hdri_list:
+        hdri_paths = [p.strip() for p in opt.hdri_list.split(',') if p.strip()]
 
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
@@ -125,6 +176,6 @@ if __name__ == '__main__':
 
     # process objects
     func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views, hdri_paths=hdri_paths)
-    rendered = dataset_utils.foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Rendering objects')
+    rendered = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Rendering objects')
     rendered = pd.concat([rendered, pd.DataFrame.from_records(records)])
     rendered.to_csv(os.path.join(opt.output_dir, f'rendered_{opt.rank}.csv'), index=False)
