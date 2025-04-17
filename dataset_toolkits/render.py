@@ -1,9 +1,6 @@
 import os
 import json
-import copy
-import glob
 import sys
-import importlib
 import argparse
 import pandas as pd
 from easydict import EasyDict as edict
@@ -11,7 +8,6 @@ from functools import partial
 from subprocess import DEVNULL, call
 import numpy as np
 from utils import sphere_hammersley_sequence
-
 
 BLENDER_PATH = os.environ.get("BLENDER_PATH", None)
 if BLENDER_PATH is None:
@@ -22,12 +18,10 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
     from concurrent.futures import ThreadPoolExecutor
     from tqdm import tqdm
     
-    # load metadata
     metadata = metadata.to_dict('records')
-
-    # processing objects
     records = []
     max_workers = max_workers or os.cpu_count()
+    
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor, \
             tqdm(total=len(metadata), desc=desc) as pbar:
@@ -36,12 +30,12 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
                     local_path = metadatum['local_path']
                     sha256 = metadatum['sha256']
                     file = os.path.join(output_dir, local_path)
-                    record = func(file, sha256)
+                    hdri_path = metadatum.get('hdri_path')
+                    hdri_name = metadatum.get('hdri_name')
+                    
+                    record = func(file, sha256, hdri_path=hdri_path, hdri_name=hdri_name)
                     if record is not None:
-                        if isinstance(record, dict):
-                            records.append(record)
-                        elif isinstance(record, list):
-                            records.extend(record)
+                        records.append(record)
                     pbar.update()
                 except Exception as e:
                     print(f"Error processing object {sha256}: {e}")
@@ -54,10 +48,8 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
         
     return pd.DataFrame.from_records(records)
 
-
-def _render(file_path, sha256, output_dir, num_views, hdri_paths):
+def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=None):
     base_folder = os.path.join(output_dir, 'renders', sha256)
-    records = []
     
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
@@ -83,35 +75,36 @@ def _render(file_path, sha256, output_dir, num_views, hdri_paths):
     if file_path.endswith('.blend'):
         args.insert(1, file_path)
     
-    if hdri_paths:
-        for hdri_path in hdri_paths:
-            hdri_name = os.path.splitext(os.path.basename(hdri_path))[0]
-            output_folder = os.path.join(base_folder, hdri_name)
-            args_run = args + ['--hdri_path', hdri_path,
-                               '--output_folder', output_folder]
-            call(args_run, stdout=DEVNULL, stderr=DEVNULL)
-            if os.path.exists(os.path.join(output_folder, 'transforms.json')):
-                records.append({
-                    'sha256': sha256,
-                    'hdri':   hdri_name,
-                    'rendered': True
-                })
+    # Render with hdri if provided
+    if hdri_path:
+        output_folder = os.path.join(base_folder, hdri_name or os.path.splitext(os.path.basename(hdri_path))[0])
+        args_run = args + ['--hdri_path', hdri_path,
+                          '--output_folder', output_folder]
+        call(args_run, stdout=DEVNULL, stderr=DEVNULL)
+        
+        if os.path.exists(os.path.join(output_folder, 'transforms.json')):
+            return {
+                'sha256': sha256,
+                'hdri_path': hdri_path,
+                'hdri_name': hdri_name or os.path.splitext(os.path.basename(hdri_path))[0],
+                'rendered': True
+            }
+    # No hdri case
     else:
         args += ['--output_folder', base_folder]
         call(args, stdout=DEVNULL, stderr=DEVNULL)
     
         if os.path.exists(os.path.join(base_folder, 'transforms.json')):
-            records.append({
+            return {
                 'sha256': sha256,
-                'hdri':   None,
+                'hdri_path': None,
+                'hdri_name': None,
                 'rendered': True
-            })        
-
-    return records
-
+            }
+    
+    return None
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Directory to save the metadata')
@@ -121,13 +114,6 @@ if __name__ == '__main__':
                         help='Instances to process')
     parser.add_argument('--num_views', type=int, default=150,
                         help='Number of views to render')
-    # new HDRI args
-    parser.add_argument('--hdri_list', type=str,
-                        help='Comma-separated list of HDRI .exr file paths')
-    parser.add_argument('--hdri_dir', type=str,
-                        help='Directory containing HDRI .exr files')
-    parser.add_argument('--hdri_strength', type=float, default=1.0,
-                        help='Strength multiplier for HDRI environment lighting')
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--max_workers', type=int, default=8)
@@ -136,20 +122,15 @@ if __name__ == '__main__':
 
     os.makedirs(os.path.join(opt.output_dir, 'renders'), exist_ok=True)
     
-    # Find all hdri files
-    hdri_paths = []
-    if opt.hdri_dir:
-        hdri_paths = sorted(glob.glob(os.path.join(opt.hdri_dir, '*.exr')))    
-    elif opt.hdri_list:
-        hdri_paths = [p.strip() for p in opt.hdri_list.split(',') if p.strip()]
-
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
         raise ValueError('metadata.csv not found')
     metadata = pd.read_csv(os.path.join(opt.output_dir, 'metadata.csv'))
+    
+    # Filter metadata based on command line arguments
     if opt.instances is None:
         metadata = metadata[metadata['local_path'].notna()]
-        if opt.filter_low_aesthetic_score is not None:
+        if opt.filter_low_aesthetic_score is not None and 'aesthetic_score' in metadata.columns:
             metadata = metadata[metadata['aesthetic_score'] >= opt.filter_low_aesthetic_score]
         if 'rendered' in metadata.columns:
             metadata = metadata[metadata['rendered'] == False]
@@ -161,21 +142,39 @@ if __name__ == '__main__':
             instances = opt.instances.split(',')
         metadata = metadata[metadata['sha256'].isin(instances)]
 
+    # Split metadata for distributed rendering
     start = len(metadata) * opt.rank // opt.world_size
     end = len(metadata) * (opt.rank + 1) // opt.world_size
     metadata = metadata[start:end]
     records = []
 
-    # filter out objects that are already processed
-    for sha256 in copy.copy(metadata['sha256'].values):
-        if os.path.exists(os.path.join(opt.output_dir, 'renders', sha256, 'transforms.json')):
-            records.append({'sha256': sha256, 'rendered': True})
-            metadata = metadata[metadata['sha256'] != sha256]
+    # Filter out already rendered object-HDRI combinations
+    filtered_metadata = []
+    for _, row in metadata.iterrows():
+        sha256 = row['sha256']
+        hdri_name = row.get('hdri_name')
+        
+        # Check if this specific object-HDRI combination is already rendered
+        if hdri_name:
+            output_path = os.path.join(opt.output_dir, 'renders', sha256, hdri_name, 'transforms.json')
+        else:
+            output_path = os.path.join(opt.output_dir, 'renders', sha256, 'transforms.json')
+            
+        if os.path.exists(output_path):
+            records.append({
+                'sha256': sha256, 
+                'hdri_path': row.get('hdri_path'),
+                'hdri_name': hdri_name,
+                'rendered': True
+            })
+        else:
+            filtered_metadata.append(row)
                 
-    print(f'Processing {len(metadata)} objects...')
+    metadata = pd.DataFrame(filtered_metadata)
+    print(f'Processing {len(metadata)} object-HDRI combinations...')
 
-    # process objects
-    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views, hdri_paths=hdri_paths)
+    # Process objects
+    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views)
     rendered = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Rendering objects')
     rendered = pd.concat([rendered, pd.DataFrame.from_records(records)])
     rendered.to_csv(os.path.join(opt.output_dir, f'rendered_{opt.rank}.csv'), index=False)
