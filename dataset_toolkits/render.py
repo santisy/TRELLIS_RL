@@ -1,6 +1,7 @@
 import os
 import json
 import copy
+import glob
 import sys
 import importlib
 import argparse
@@ -12,19 +13,12 @@ import numpy as np
 from utils import sphere_hammersley_sequence
 
 
-BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
-BLENDER_INSTALLATION_PATH = '/tmp'
-BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
-
-def _install_blender():
-    if not os.path.exists(BLENDER_PATH):
-        os.system('sudo apt-get update')
-        os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
-        os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
-        os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
+BLENDER_PATH = os.environ.get("BLENDER_PATH", None)
+if BLENDER_PATH is None:
+    raise ValueError("Must first specify the Blender binary path as $BLENDER_PATH")
 
 
-def _render(file_path, sha256, output_dir, num_views):
+def _render(file_path, sha256, output_dir, num_views, hdri_paths):
     output_folder = os.path.join(output_dir, 'renders', sha256)
     
     # Build camera {yaw, pitch, radius, fov}
@@ -52,7 +46,12 @@ def _render(file_path, sha256, output_dir, num_views):
     if file_path.endswith('.blend'):
         args.insert(1, file_path)
     
-    call(args, stdout=DEVNULL, stderr=DEVNULL)
+    if hdri_paths:
+        for hdri_path in hdri_paths:
+            args_run = args + ['--hdri_path', hdri_path]
+            call(args_run, stdout=DEVNULL, stderr=DEVNULL)
+    else:
+        call(args, stdout=DEVNULL, stderr=DEVNULL)
     
     if os.path.exists(os.path.join(output_folder, 'transforms.json')):
         return {'sha256': sha256, 'rendered': True}
@@ -70,6 +69,13 @@ if __name__ == '__main__':
                         help='Instances to process')
     parser.add_argument('--num_views', type=int, default=150,
                         help='Number of views to render')
+    # new HDRI args
+    parser.add_argument('--hdri_list', type=str,
+                        help='Comma-separated list of HDRI .exr file paths')
+    parser.add_argument('--hdri_dir', type=str,
+                        help='Directory containing HDRI .exr files')
+    parser.add_argument('--hdri_strength', type=float, default=1.0,
+                        help='Strength multiplier for HDRI environment lighting')
     dataset_utils.add_args(parser)
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
@@ -79,9 +85,12 @@ if __name__ == '__main__':
 
     os.makedirs(os.path.join(opt.output_dir, 'renders'), exist_ok=True)
     
-    # install blender
-    print('Checking blender...', flush=True)
-    _install_blender()
+    # Find all hdri files
+    hdri_paths = []
+    if opt.hdri_list:
+        hdri_paths = [p.strip() for p in opt.hdri_list.split(',') if p.strip()]
+    elif opt.hdri_dir:
+        hdri_paths = sorted(glob.glob(os.path.join(opt.hdri_dir, '*.exr')))    
 
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
@@ -115,7 +124,7 @@ if __name__ == '__main__':
     print(f'Processing {len(metadata)} objects...')
 
     # process objects
-    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views)
+    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views, hdri_paths=hdri_paths)
     rendered = dataset_utils.foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Rendering objects')
     rendered = pd.concat([rendered, pd.DataFrame.from_records(records)])
     rendered.to_csv(os.path.join(opt.output_dir, f'rendered_{opt.rank}.csv'), index=False)

@@ -209,6 +209,33 @@ def init_lighting():
     }
 
 
+def init_environment_lighting(hdri_path, strength=1.0):
+    world = bpy.context.scene.world
+    world.use_nodes = True
+    nodes = world.node_tree.nodes
+    links = world.node_tree.links
+    # clear existing nodes
+    nodes.clear()
+    links.clear()
+    # add environment texture node
+    env_node = nodes.new(type='ShaderNodeTexEnvironment')
+    env_node.image = bpy.data.images.load(hdri_path)
+    env_node.image.colorspace_settings.name = 'Non-Color'
+    env_node.location = (-300, 0)
+    # add background node
+    bg_node = nodes.new(type='ShaderNodeBackground')
+    bg_node.inputs['Strength'].default_value = strength
+    bg_node.location = (0, 0)
+    # add output node
+    out_node = nodes.new(type='ShaderNodeOutputWorld')
+    out_node.location = (200, 0)
+    # link nodes
+    links.new(env_node.outputs['Color'], bg_node.inputs['Color'])
+    links.new(bg_node.outputs['Background'], out_node.inputs['Surface'])
+    # enable MIS for HDRI
+    bpy.context.scene.world.cycles.use_multiple_importance_sampling = True
+
+
 def load_object(object_path: str) -> None:
     """Loads a model with a supported file extension into the scene.
 
@@ -440,7 +467,11 @@ def main(arg):
     
     # Initialize camera and lighting
     cam = init_camera()
-    init_lighting()
+    if arg.hdri_path:
+        init_environment_lighting(arg.hdri_path, arg.hdri_strength)
+    else:
+        # Default fixed point + area lighting
+        init_lighting()
     print('[INFO] Camera and lighting initialized.')
 
     # Override material
@@ -521,6 +552,8 @@ if __name__ == '__main__':
     parser.add_argument('--save_mist', action='store_true', help='Save the mist distance maps.')
     parser.add_argument('--split_normal', action='store_true', help='Split the normals of the mesh.')
     parser.add_argument('--save_mesh', action='store_true', help='Save the mesh as a .ply file.')
+    parser.add_argument('--hdri_path', default=None, type=str, help='The hdri environment map path.')
+    parser.add_argument('--hdri_strength', default=1.0, type=float, help='trength multiplier for HDRI environment lighting')
     argv = sys.argv[sys.argv.index("--") + 1:]
     args = parser.parse_args(argv)
 
