@@ -117,7 +117,7 @@ if __name__ == '__main__':
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--max_workers', type=int, default=8)
-    opt = parser.parse_args(sys.argv[2:])
+    opt = parser.parse_args()
     opt = edict(vars(opt))
 
     os.makedirs(os.path.join(opt.output_dir, 'renders'), exist_ok=True)
