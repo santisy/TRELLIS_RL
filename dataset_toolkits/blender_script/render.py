@@ -540,12 +540,8 @@ def main(arg):
         triangulate_meshes()
         print('[INFO] Meshes triangulated.')
 
-        # Enable the PLY export add-on
-        if "io_mesh_ply" not in bpy.context.preferences.addons:
-            bpy.ops.preferences.addon_enable(module="io_mesh_ply")
-        
         # export ply mesh
-        bpy.ops.export_mesh.ply(filepath=os.path.join(arg.output_folder, 'mesh.ply'))
+        bpy.ops.wm.ply_export(filepath=os.path.join(arg.output_folder, "mesh.ply"))        
 
         
 if __name__ == '__main__':
