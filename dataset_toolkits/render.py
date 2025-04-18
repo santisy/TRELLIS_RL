@@ -52,13 +52,16 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
         
     return pd.DataFrame.from_records(records)
 
-def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=None, debug=False):
+def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=None, debug=False, no_random_offset=False):
     base_folder = os.path.join(output_dir, 'renders', sha256)
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
     pitchs = []
     # TODO: temporarily disable random offset. (Why it is necessary?)
-    offset = (np.random.rand(), np.random.rand())
+    if not no_random_offset:
+        offset = (np.random.rand(), np.random.rand())
+    else:
+        offset = (0, 0)
     for i in range(num_views):
         y, p = sphere_hammersley_sequence(i, num_views, offset)
         yaws.append(y)
@@ -139,6 +142,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_workers', type=int, default=8)
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug output')
+    parser.add_argument('--no_random_offset', action="store_true")
     opt = parser.parse_args()
     opt = edict(vars(opt))
 
@@ -196,7 +200,11 @@ if __name__ == '__main__':
     print(f'Processing {len(metadata)} object-HDRI combinations...')
 
     # Process objects
-    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views, debug=opt.debug)
+    func = partial(_render,
+                   output_dir=opt.output_dir,
+                   num_views=opt.num_views,
+                   debug=opt.debug,
+                   no_random_offset=opt.no_random_offset)
     rendered = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, 
                                 desc='Rendering objects', debug=opt.debug)
     rendered = pd.concat([rendered, pd.DataFrame.from_records(records)])
