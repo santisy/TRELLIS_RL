@@ -20,11 +20,11 @@ def create_metadata(objects_dir, hdri_dir=None, output_dir=None):
     # Find all HDRI files if provided
     hdri_files = []
     if hdri_dir:
-        hdri_files = glob.glob(os.path.join(hdri_dir, '*.exr'))
+        hdri_files = [os.path.realpath(p) for p in glob.glob(os.path.join(hdri_dir, '*.exr'))]
     
     # Create metadata for each object
     for obj_path in tqdm.tqdm(object_files, desc="Processing objects"):
-        rel_path = os.path.relpath(obj_path, os.path.dirname(objects_dir))
+        real_path = os.path.realpath(obj_path)
         sha256 = compute_sha256(obj_path)
         
         if hdri_files:
@@ -32,7 +32,7 @@ def create_metadata(objects_dir, hdri_dir=None, output_dir=None):
             for hdri_path in hdri_files:
                 hdri_name = os.path.splitext(os.path.basename(hdri_path))[0]
                 records.append({
-                    'local_path': rel_path,
+                    'local_path': real_path,
                     'sha256': sha256,
                     'hdri_path': hdri_path,
                     'hdri_name': hdri_name,
@@ -42,7 +42,7 @@ def create_metadata(objects_dir, hdri_dir=None, output_dir=None):
         else:
             # Just object entries without HDRI
             records.append({
-                'local_path': rel_path,
+                'local_path': real_path,
                 'sha256': sha256,
                 'hdri_path': None,
                 'hdri_name': None,

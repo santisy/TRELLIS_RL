@@ -28,7 +28,7 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
                 try:
                     local_path = metadatum['local_path']
                     sha256 = metadatum['sha256']
-                    file = os.path.join(output_dir, local_path)
+                    file = local_path # THis is the different behavior
                     hdri_path = metadatum.get('hdri_path')
                     hdri_name = metadatum.get('hdri_name')
                     
