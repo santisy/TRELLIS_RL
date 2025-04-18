@@ -57,9 +57,10 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
     pitchs = []
-    offset = (np.random.rand(), np.random.rand())
+    # TODO: temporarily disable random offset. (Why it is necessary?)
+    # offset = (np.random.rand(), np.random.rand())
     for i in range(num_views):
-        y, p = sphere_hammersley_sequence(i, num_views, offset)
+        y, p = sphere_hammersley_sequence(i, num_views, (0, 0))
         yaws.append(y)
         pitchs.append(p)
     radius = [2] * num_views
