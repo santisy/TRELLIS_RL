@@ -460,6 +460,12 @@ def main(arg):
             split_mesh_normal()
         # delete_custom_normals()
     print('[INFO] Scene initialized.')
+
+    # Make the transformation of objects to real
+    for inst in [o for o in bpy.context.scene.objects if o.instance_collection]:
+        inst.select_set(True)
+        bpy.ops.object.duplicates_make_real()
+        inst.select_set(False)
     
     # normalize scene
     scale, offset = normalize_scene()
