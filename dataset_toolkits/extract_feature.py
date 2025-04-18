@@ -1,8 +1,6 @@
 import os
 import copy
-import sys
 import json
-import importlib
 import argparse
 import torch
 import torch.nn.functional as F
@@ -20,10 +18,10 @@ from PIL import Image
 torch.set_grad_enabled(False)
 
 
-def get_data(frames, sha256):
+def get_data(frames, sha256, hdri_name):
     with ThreadPoolExecutor(max_workers=16) as executor:
         def worker(view):
-            image_path = os.path.join(opt.output_dir, 'renders', sha256, view['file_path'])
+            image_path = os.path.join(opt.output_dir, 'renders', sha256, hdri_name, view['file_path'])
             try:
                 image = Image.open(image_path)
             except:
@@ -103,33 +101,37 @@ if __name__ == '__main__':
 
     # filter out objects that are already processed
     sha256s = list(metadata['sha256'].values)
-    for sha256 in copy.copy(sha256s):
-        if os.path.exists(os.path.join(opt.output_dir, 'features', feature_name, f'{sha256}.npz')):
-            records.append({'sha256': sha256, f'feature_{feature_name}' : True})
+    hdri_names = list(metadata['hdri_names'].values)
+    for sha256, hdri_name in zip(copy.copy(sha256s), copy.copy(hdri_names)):
+        if os.path.exists(os.path.join(opt.output_dir, 'features', feature_name, f'{sha256}_{hdri_name}.npz')):
+            records.append({'sha256': sha256, 'hdri_name': hdri_name, f'feature_{feature_name}' : True})
             sha256s.remove(sha256)
+            hdri_names.remove(hdri_name)
 
     # extract features
     load_queue = Queue(maxsize=4)
     try:
         with ThreadPoolExecutor(max_workers=8) as loader_executor, \
             ThreadPoolExecutor(max_workers=8) as saver_executor:
-            def loader(sha256):
+            def loader(args):
+                sha256 = args[0]
+                hdri_name = args[1]
                 try:
-                    with open(os.path.join(opt.output_dir, 'renders', sha256, 'transforms.json'), 'r') as f:
+                    with open(os.path.join(opt.output_dir, 'renders', sha256, hdri_name, 'transforms.json'), 'r') as f:
                         metadata = json.load(f)
                     frames = metadata['frames']
                     data = []
-                    for datum in get_data(frames, sha256):
+                    for datum in get_data(frames, sha256, hdri_name):
                         datum['image'] = transform(datum['image'])
                         data.append(datum)
-                    positions = utils3d.io.read_ply(os.path.join(opt.output_dir, 'voxels', f'{sha256}.ply'))[0]
-                    load_queue.put((sha256, data, positions))
+                    positions = utils3d.io.read_ply(os.path.join(opt.output_dir, 'voxels', hdri_name, f'{sha256}.ply'))[0]
+                    load_queue.put((sha256, hdri_name, data, positions))
                 except Exception as e:
                     print(f"Error loading data for {sha256}: {e}")
 
-            loader_executor.map(loader, sha256s)
+            loader_executor.map(loader, zip(sha256s, hdri_names))
             
-            def saver(sha256, pack, patchtokens, uv):
+            def saver(sha256, hdri_name, pack, patchtokens, uv):
                 pack['patchtokens'] = F.grid_sample(
                     patchtokens,
                     uv.unsqueeze(1),
@@ -137,12 +139,12 @@ if __name__ == '__main__':
                     align_corners=False,
                 ).squeeze(2).permute(0, 2, 1).cpu().numpy()
                 pack['patchtokens'] = np.mean(pack['patchtokens'], axis=0).astype(np.float16)
-                save_path = os.path.join(opt.output_dir, 'features', feature_name, f'{sha256}.npz')
+                save_path = os.path.join(opt.output_dir, 'features', feature_name, f'{sha256}_{hdri_name}.npz')
                 np.savez_compressed(save_path, **pack)
-                records.append({'sha256': sha256, f'feature_{feature_name}' : True})
+                records.append({'sha256': sha256, 'hdri_name': hdri_name, f'feature_{feature_name}' : True})
                 
             for _ in tqdm(range(len(sha256s)), desc="Extracting features"):
-                sha256, data, positions = load_queue.get()
+                sha256, hdri_name, data, positions = load_queue.get()
                 positions = torch.from_numpy(positions).float().cuda()
                 indices = ((positions + 0.5) * 64).long()
                 assert torch.all(indices >= 0) and torch.all(indices < 64), "Some vertices are out of bounds"
@@ -168,11 +170,11 @@ if __name__ == '__main__':
                 uv = torch.cat(uv_lst, dim=0)
 
                 # save features
-                saver_executor.submit(saver, sha256, pack, patchtokens, uv)
+                saver_executor.submit(saver, sha256, hdri_name, pack, patchtokens, uv)
                 
             saver_executor.shutdown(wait=True)
-    except:
-        print("Error happened during processing.")
+    except Exception as e:
+        print(f"Error happened during processing: {e}.")
         
     records = pd.DataFrame.from_records(records)
     records.to_csv(os.path.join(opt.output_dir, f'feature_{feature_name}_{opt.rank}.csv'), index=False)

@@ -42,8 +42,8 @@ def main():
             index_col=["sha256", "hdri_name"]
         )
 
-        # 3b. Update in place
-        meta.update(df)
+        # 3b. Merge data, adding new columns if they appear
+        meta = meta.combine_first(df)  # Adds missing columns and fills missing values
 
         # 3c. Archive processed CSV
         shutil.move(step_csv, os.path.join(merged_dir, name))
