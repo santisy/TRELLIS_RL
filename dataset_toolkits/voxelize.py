@@ -1,7 +1,5 @@
 import os
 import copy
-import sys
-import importlib
 import argparse
 import pandas as pd
 from easydict import EasyDict as edict
@@ -10,9 +8,49 @@ import numpy as np
 import open3d as o3d
 import utils3d
 
+def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Processing objects', debug=False) -> pd.DataFrame:
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from tqdm import tqdm
+    
+    metadata = metadata.to_dict('records')
+    records = []
+    max_workers = max_workers or os.cpu_count()
+    
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor, \
+            tqdm(total=len(metadata), desc=desc) as pbar:
+            def worker(metadatum):
+                try:
+                    local_path = metadatum['local_path']
+                    sha256 = metadatum['sha256']
+                    file = local_path # THis is the different behavior
+                    hdri_name = metadatum.get('hdri_name')
+                    
+                    if debug:
+                        print(f"Processing file: {file}, SHA256: {sha256}")
+                        if not os.path.exists(file):
+                            print(f"ERROR: File does not exist: {file}")
+                    
+                    record = func(file, sha256, hdri_name)
+                    if record is not None:
+                        records.append(record)
+                    pbar.update()
+                except Exception as e:
+                    print(f"Error processing object {sha256}: {e}")
+                    pbar.update()
+            
+            executor.map(worker, metadata)
+            executor.shutdown(wait=True)
+    except Exception as e:
+        print(f"Error happened during processing: {e}")
+        
+    return pd.DataFrame.from_records(records)
 
-def _voxelize(file, sha256, output_dir):
-    mesh = o3d.io.read_triangle_mesh(os.path.join(output_dir, 'renders', sha256, 'mesh.ply'))
+
+def _voxelize(file, sha256, hdri_name, output_dir):
+    mesh = o3d.io.read_triangle_mesh(os.path.join(output_dir, 'renders', sha256, hdri_name, 'mesh.ply'))
+    voxel_out_dir = os.path.join(output_dir, 'voxels', hdri_name)
     # clamp vertices to the range [-0.5, 0.5]
     vertices = np.clip(np.asarray(mesh.vertices), -0.5 + 1e-6, 0.5 - 1e-6)
     mesh.vertices = o3d.utility.Vector3dVector(vertices)
@@ -20,12 +58,12 @@ def _voxelize(file, sha256, output_dir):
     vertices = np.array([voxel.grid_index for voxel in voxel_grid.get_voxels()])
     assert np.all(vertices >= 0) and np.all(vertices < 64), "Some vertices are out of bounds"
     vertices = (vertices + 0.5) / 64 - 0.5
-    utils3d.io.write_ply(os.path.join(output_dir, 'voxels', f'{sha256}.ply'), vertices)
+    os.makedirs(voxel_out_dir, exist_ok=True)
+    utils3d.io.write_ply(os.path.join(voxel_out_dir, f'{sha256}.ply'), vertices)
     return {'sha256': sha256, 'voxelized': True, 'num_voxels': len(vertices)}
 
 
 if __name__ == '__main__':
-    dataset_utils = importlib.import_module(f'datasets.{sys.argv[1]}')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_dir', type=str, required=True,
@@ -36,11 +74,10 @@ if __name__ == '__main__':
                         help='Instances to process')
     parser.add_argument('--num_views', type=int, default=150,
                         help='Number of views to render')
-    dataset_utils.add_args(parser)
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--max_workers', type=int, default=None)
-    opt = parser.parse_args(sys.argv[2:])
+    opt = parser.parse_args()
     opt = edict(vars(opt))
 
     os.makedirs(os.path.join(opt.output_dir, 'voxels'), exist_ok=True)
@@ -81,6 +118,6 @@ if __name__ == '__main__':
 
     # process objects
     func = partial(_voxelize, output_dir=opt.output_dir)
-    voxelized = dataset_utils.foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Voxelizing')
+    voxelized = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Voxelizing')
     voxelized = pd.concat([voxelized, pd.DataFrame.from_records(records)])
     voxelized.to_csv(os.path.join(opt.output_dir, f'voxelized_{opt.rank}.csv'), index=False)
