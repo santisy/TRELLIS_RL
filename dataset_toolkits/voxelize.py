@@ -60,7 +60,7 @@ def _voxelize(file, sha256, hdri_name, output_dir):
     vertices = (vertices + 0.5) / 64 - 0.5
     os.makedirs(voxel_out_dir, exist_ok=True)
     utils3d.io.write_ply(os.path.join(voxel_out_dir, f'{sha256}.ply'), vertices)
-    return {'sha256': sha256, 'voxelized': True, 'num_voxels': len(vertices)}
+    return {'sha256': sha256, 'hdri_name': hdri_name, 'voxelized': True, 'num_voxels': len(vertices)}
 
 
 if __name__ == '__main__':
