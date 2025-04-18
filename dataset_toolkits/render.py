@@ -58,9 +58,9 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
     yaws = []
     pitchs = []
     # TODO: temporarily disable random offset. (Why it is necessary?)
-    # offset = (np.random.rand(), np.random.rand())
+    offset = (np.random.rand(), np.random.rand())
     for i in range(num_views):
-        y, p = sphere_hammersley_sequence(i, num_views, (0, 0))
+        y, p = sphere_hammersley_sequence(i, num_views, offset)
         yaws.append(y)
         pitchs.append(p)
     radius = [2] * num_views
@@ -86,7 +86,6 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
                           '--output_folder', output_folder]
         
         if debug:
-            print(f"Running command: {' '.join(args_run)}")
             process = Popen(args_run, stdout=PIPE, stderr=PIPE)
             stdout, stderr = process.communicate()
             print(f"Command exit code: {process.returncode}")
@@ -107,7 +106,6 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
         args += ['--output_folder', base_folder]
         
         if debug:
-            print(f"Running command: {' '.join(args)}")
             process = Popen(args, stdout=PIPE, stderr=PIPE)
             stdout, stderr = process.communicate()
             print(f"Command exit code: {process.returncode}")
