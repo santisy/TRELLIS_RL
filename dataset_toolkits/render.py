@@ -1,11 +1,10 @@
 import os
 import json
-import sys
 import argparse
 import pandas as pd
 from easydict import EasyDict as edict
 from functools import partial
-from subprocess import DEVNULL, call
+from subprocess import DEVNULL, call, PIPE, Popen
 import numpy as np
 from utils import sphere_hammersley_sequence
 
@@ -13,7 +12,7 @@ BLENDER_PATH = os.environ.get("BLENDER_PATH", None)
 if BLENDER_PATH is None:
     raise ValueError("Must first specify the Blender binary path as $BLENDER_PATH")
     
-def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Processing objects') -> pd.DataFrame:
+def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Processing objects', debug=False) -> pd.DataFrame:
     import os
     from concurrent.futures import ThreadPoolExecutor
     from tqdm import tqdm
@@ -33,7 +32,12 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
                     hdri_path = metadatum.get('hdri_path')
                     hdri_name = metadatum.get('hdri_name')
                     
-                    record = func(file, sha256, hdri_path=hdri_path, hdri_name=hdri_name)
+                    if debug:
+                        print(f"Processing file: {file}, SHA256: {sha256}")
+                        if not os.path.exists(file):
+                            print(f"ERROR: File does not exist: {file}")
+                    
+                    record = func(file, sha256, hdri_path=hdri_path, hdri_name=hdri_name, debug=debug)
                     if record is not None:
                         records.append(record)
                     pbar.update()
@@ -43,14 +47,13 @@ def foreach_instance(metadata, output_dir, func, max_workers=None, desc='Process
             
             executor.map(worker, metadata)
             executor.shutdown(wait=True)
-    except:
-        print("Error happened during processing.")
+    except Exception as e:
+        print(f"Error happened during processing: {e}")
         
     return pd.DataFrame.from_records(records)
 
-def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=None):
+def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=None, debug=False):
     base_folder = os.path.join(output_dir, 'renders', sha256)
-    
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
     pitchs = []
@@ -80,7 +83,16 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
         output_folder = os.path.join(base_folder, hdri_name or os.path.splitext(os.path.basename(hdri_path))[0])
         args_run = args + ['--hdri_path', hdri_path,
                           '--output_folder', output_folder]
-        call(args_run, stdout=DEVNULL, stderr=DEVNULL)
+        
+        if debug:
+            print(f"Running command: {' '.join(args_run)}")
+            process = Popen(args_run, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            print(f"Command exit code: {process.returncode}")
+            print(f"Command stdout: {stdout.decode()}")
+            print(f"Command stderr: {stderr.decode()}")
+        else:
+            call(args_run, stdout=DEVNULL, stderr=DEVNULL)
         
         if os.path.exists(os.path.join(output_folder, 'transforms.json')):
             return {
@@ -92,7 +104,16 @@ def _render(file_path, sha256, output_dir, num_views, hdri_path=None, hdri_name=
     # No hdri case
     else:
         args += ['--output_folder', base_folder]
-        call(args, stdout=DEVNULL, stderr=DEVNULL)
+        
+        if debug:
+            print(f"Running command: {' '.join(args)}")
+            process = Popen(args, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            print(f"Command exit code: {process.returncode}")
+            print(f"Command stdout: {stdout.decode()}")
+            print(f"Command stderr: {stderr.decode()}")
+        else:
+            call(args, stdout=DEVNULL, stderr=DEVNULL)
     
         if os.path.exists(os.path.join(base_folder, 'transforms.json')):
             return {
@@ -117,6 +138,8 @@ if __name__ == '__main__':
     parser.add_argument('--rank', type=int, default=0)
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--max_workers', type=int, default=8)
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug output')
     opt = parser.parse_args()
     opt = edict(vars(opt))
 
@@ -174,7 +197,9 @@ if __name__ == '__main__':
     print(f'Processing {len(metadata)} object-HDRI combinations...')
 
     # Process objects
-    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views)
-    rendered = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, desc='Rendering objects')
+    func = partial(_render, output_dir=opt.output_dir, num_views=opt.num_views, debug=opt.debug)
+    rendered = foreach_instance(metadata, opt.output_dir, func, max_workers=opt.max_workers, 
+                                desc='Rendering objects', debug=opt.debug)
     rendered = pd.concat([rendered, pd.DataFrame.from_records(records)])
-    rendered.to_csv(os.path.join(opt.output_dir, f'rendered_{opt.rank}.csv'), index=False)
+    output_csv = os.path.join(opt.output_dir, f'rendered_{opt.rank}.csv')
+    rendered.to_csv(output_csv, index=False)
